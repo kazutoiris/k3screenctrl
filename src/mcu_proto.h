@@ -10,17 +10,23 @@
 (Rx)
  * 0x01, 0x04 and 0x10 in PAYLOAD_* needs to be escaped by FRAME_ESCAPE.
  *
- * Actually there are frames with 0x01 and 0x02 as PAYLOAD_HEADER. Maybe this
-kind of
- * frames is only used when communicating with bootloader. We do not need them
-here
- * since we are not upgrading the bootloader.
+ * Actually there are frames whose first payload byte is 0x01 / 0x02 / 0x03.
+ * These are only used when communicating with the bootloader (i.e. during MCU
+ * firmware upgrade). See firmware_upgrade.c.
  */
 
 #define FRAME_HEADER 0x01
 #define FRAME_TRAILER 0x04
 #define FRAME_ESCAPE 0x10
 #define PAYLOAD_HEADER 0x30
+
+/*
+ * Bootloader frame types. These appear as the first payload byte when the MCU
+ * is in download mode. Contrast with PAYLOAD_HEADER (0x30) used in app mode.
+ */
+#define FRAME_BL_MCU_VERSION_REQ 0x01
+#define FRAME_BL_ERASE_REQ       0x02
+#define FRAME_BL_FLASH_REQ       0x03
 
 typedef enum _request_type {
     REQUEST_GET_MCU_VERSION = 1,

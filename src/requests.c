@@ -1,7 +1,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <syslog.h>
+#include "logging.h"
 
 #include "common.h"
 #include "frame.h"

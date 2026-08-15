@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <string.h>
-#include <syslog.h>
+#include "logging.h"
 
 #include "common.h"
 #include "infocenter.h"

@@ -3,6 +3,7 @@
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -19,6 +20,20 @@ int serial_setup(const char *dev_path) {
     g_serial_fd = open(dev_path, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (g_serial_fd == -1) {
         syslog(LOG_CRIT, "could not open %s\n", dev_path);
+        return -1;
+    }
+
+    /* Acquire an exclusive lock so that a background k3screenctrl instance
+     * (e.g. the procd service) cannot open the same port and steal bytes
+     * from the upgrade traffic. LOCK_NB makes this non-blocking: if another
+     * process already holds the lock, we fail immediately instead of
+     * hanging. */
+    if (flock(g_serial_fd, LOCK_EX | LOCK_NB) == -1) {
+        syslog(LOG_CRIT, "could not acquire exclusive lock on %s: %s. "
+               "Is another k3screenctrl instance running? "
+               "Stop it first.\n",
+               dev_path, strerror(errno));
+        serial_close();
         return -1;
     }
 

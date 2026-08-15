@@ -1,107 +1,90 @@
-#!/bin/bash
-# Copyright (C) 2017 XiaoShan https://www.mivm.cn
+#!/bin/sh
 
-online_list=($(grep -v "0x0" /proc/net/arp | grep "br-lan" |awk '{print $1}'))
-mac_online_list=($(grep -v "0x0" /proc/net/arp | grep "br-lan" |awk '{print $4}'))
+SPEED_DIR="/tmp/lan_speed"
+OUI_FILE="/lib/k3screenctrl/oui/oui.txt"
+mkdir -p "$SPEED_DIR" 2>/dev/null
 
-arp_ip=($(grep "br-lan" /proc/net/arp | awk '{print $1}'))
+# Setup iptables chains for traffic counting
+iptables -L UPSP >/dev/null 2>&1 || iptables -N UPSP
+iptables -L DWSP >/dev/null 2>&1 || iptables -N DWSP
 
-uci show k3screenctrl > /tmp/k3_custom
+# Load custom device config
+uci show k3screenctrl 2>/dev/null > /tmp/k3_custom
 
-if [ -z "$(iptables --list | grep UPSP)" -a -z "$(iptables --list | grep DWSP)" ]; then
-	iptables -N UPSP
-	iptables -N DWSP
-	mkdir /tmp/lan_speed
-fi
-for ((i=0;i<${#arp_ip[@]};i++))
-do
-	if [ -z "$(iptables -nvx -L FORWARD | grep DWSP | grep ${arp_ip[i]} -w)" -a -z "$(iptables -nvx -L FORWARD | grep UPSP | grep ${arp_ip[i]} -w)" ]; then
-		iptables -I FORWARD 1 -s ${arp_ip[i]} -j UPSP
-		iptables -I FORWARD 1 -d ${arp_ip[i]} -j DWSP
-		echo $(date +%s) > /tmp/lan_speed/${arp_ip[i]}
-		echo 0 >> /tmp/lan_speed/${arp_ip[i]}
-		echo 0 >> /tmp/lan_speed/${arp_ip[i]}
-	fi
+# Get online devices from ARP table
+DEVICES=$(grep -v "0x0" /proc/net/arp | grep "br-lan")
+[ -z "$DEVICES" ] && { echo 0; echo 0; exit 0; }
+
+COUNT=$(echo "$DEVICES" | wc -l)
+echo "$COUNT"
+
+# Process each device
+echo "$DEVICES" | while IFS= read -r line; do
+    ip=$(echo "$line" | awk '{print $1}')
+    mac=$(echo "$line" | awk '{print $4}')
+    [ -z "$ip" ] && continue
+
+    # Add iptables rules if needed
+    iptables -nvx -L FORWARD 2>/dev/null | grep -q "UPSP.*$ip" || {
+        iptables -I FORWARD 1 -s "$ip" -j UPSP
+        iptables -I FORWARD 1 -d "$ip" -j DWSP
+        date +%s > "$SPEED_DIR/$ip"
+        echo 0 >> "$SPEED_DIR/$ip"
+        echo 0 >> "$SPEED_DIR/$ip"
+    }
+
+    # Get hostname from DHCP leases
+    hostname=$(grep -w "$ip" /tmp/dhcp.leases 2>/dev/null | awk '{print $4}')
+
+    # Get logo from OUI database
+    mac_upper=$(echo "$mac" | tr 'a-z' 'A-Z')
+    mac_prefix=$(echo "$mac_upper" | tr -d ':' | cut -c1-6)
+    logo=$(grep -i "$mac_prefix" "$OUI_FILE" 2>/dev/null | awk '{print $1}')
+
+    # Check for custom config (user-defined name/icon)
+    tmp_uci=$(grep "$mac_upper" /tmp/k3_custom 2>/dev/null | awk -F'=' '{print $1}' | awk -F'.' '{print $1"."$2}')
+    if [ -n "$tmp_uci" ]; then
+        hostname=$(uci get "$tmp_uci.name" 2>/dev/null)
+        logo=$(uci get "$tmp_uci.icon" 2>/dev/null)
+    fi
+
+    # Read last speed stats
+    last_time=0; last_up=0; last_dw=0
+    if [ -f "$SPEED_DIR/$ip" ]; then
+        last_time=$(sed -n '1p' "$SPEED_DIR/$ip")
+        last_up=$(sed -n '2p' "$SPEED_DIR/$ip")
+        last_dw=$(sed -n '3p' "$SPEED_DIR/$ip")
+    fi
+
+    # Get current iptables counters
+    now_time=$(date +%s)
+    now_up=$(iptables -nvx -L FORWARD 2>/dev/null | grep "UPSP" | grep -w "$ip" | awk '{print $2}')
+    now_dw=$(iptables -nvx -L FORWARD 2>/dev/null | grep "DWSP" | grep -w "$ip" | awk '{print $2}')
+
+    [ -z "$last_time" ] && last_time=0
+    [ -z "$last_up" ] && last_up=0
+    [ -z "$last_dw" ] && last_dw=0
+    [ -z "$now_up" ] && now_up=0
+    [ -z "$now_dw" ] && now_dw=0
+
+    # Calculate speed (bytes/sec)
+    delta=$((now_time - last_time))
+    [ "$delta" -eq 0 ] && delta=1
+    up_sp=$(( (now_up - last_up) / delta ))
+    dw_sp=$(( (now_dw - last_dw) / delta ))
+
+    # Save current stats
+    printf '%s\n%s\n%s\n' "$now_time" "$now_up" "$now_dw" > "$SPEED_DIR/$ip"
+
+    # Defaults
+    [ -z "$hostname" ] || [ "$hostname" = "*" ] && hostname="Unknown"
+    [ -z "$logo" ] && logo=0
+
+    # Output: hostname, download_speed, upload_speed, logo
+    echo "$hostname"
+    echo "$dw_sp"
+    echo "$up_sp"
+    echo "$logo"
 done
-
-if [ -s /tmp/lan_online_list.temp ]; then
-	cat /tmp/lan_online_list.temp
-	rm /tmp/lan_online_list.temp
-	exit 0
-else
-	echo ${#online_list[@]}
-fi
-
-for ((i=0;i<${#online_list[@]};i++))
-do
-	hostname[i]=$(grep ${online_list[i]} -w /tmp/dhcp.leases | awk '{print $4}')
-	hostmac=${mac_online_list[i]//:/} && hostmac=${hostmac:0:6}
-	logo[i]=$(grep -i $hostmac /lib/k3screenctrl/oui/oui.txt | awk '{print $1}')
-	
-	#for k3_custom
-	tmp_mac=$(echo ${mac_online_list[i]} | tr 'a-z' 'A-Z')
-	tmp_uci=$(cat /tmp/k3_custom | grep $tmp_mac | awk -F'=' '{print $1}' | awk -F'.' '{print$1"."$2}')
-	if [ -n "$tmp_uci" ];then
-		hostname[i]=$(uci get $tmp_uci.name)
-		logo[i]=$(uci get $tmp_uci.icon)
-	fi
-
-	last_speed_time=$(cut -d$'\n' -f,1 /tmp/lan_speed/${online_list[i]})
-	last_speed_up=$(cut -d$'\n' -f,2 /tmp/lan_speed/${online_list[i]})
-	last_speed_dw=$(cut -d$'\n' -f,3 /tmp/lan_speed/${online_list[i]})
-	now_speed_time=$(date +%s)
-	now_speed_up=$(iptables -nvx -L FORWARD | grep UPSP | grep ${online_list[i]} -w  | awk '{print $2}')
-	now_speed_dw=$(iptables -nvx -L FORWARD | grep DWSP | grep ${online_list[i]} -w  | awk '{print $2}')
-
-	if [ -z "${last_speed_time}" ]; then
-		last_speed_time=0
-	fi
-	if [ -z "${last_speed_up}" ]; then
-		last_speed_up=0
-	fi
-	if [ -z "${last_speed_dw}" ]; then
-		last_speed_dw=0
-	fi
-	time_s=$(($now_speed_time - $last_speed_time))
-	if [ $time_s -eq 0 ];then
-		time_s=1
-	fi
-	up_sp[i]=$((($now_speed_up - $last_speed_up) / $time_s))
-	dw_sp[i]=$((($now_speed_dw - $last_speed_dw) / $time_s))
-	echo $now_speed_time > /tmp/lan_speed/${online_list[i]}
-	echo $now_speed_up >> /tmp/lan_speed/${online_list[i]}
-	echo $now_speed_dw >> /tmp/lan_speed/${online_list[i]}
-
-	if [ -z "${hostname[i]}" -o "${hostname[i]}" = "*" ]; then
-		hostname[i]="Unknown"
-	fi
-	if [ -z "${logo[i]}" ]; then
-		logo[i]="0"
-	fi
-	echo "${hostname[i]}"
-	echo "${dw_sp[i]}"
-	echo "${up_sp[i]}"
-	echo "${logo[i]}"
-done
-
-now_arp_refresh_time=$(date +%s)
-if [ -s /tmp/arp_refresh_time ]; then
-	last_arp_refresh_time=$(cat /tmp/arp_refresh_time)
-	if [ $(($now_arp_refresh_time - $last_arp_refresh_time)) -ge 600 ]; then
-		echo ${#online_list[@]} > /tmp/lan_online_list.temp
-		for ((i=0;i<${#online_list[@]};i++))
-		do
-			#arp -d ${online_list[i]}
-			echo "${hostname[i]}" >> /tmp/lan_online_list.temp
-			echo "${dw_sp[i]}" >> /tmp/lan_online_list.temp
-			echo "${up_sp[i]}" >> /tmp/lan_online_list.temp
-			echo "${logo[i]}" >> /tmp/lan_online_list.temp
-		done
-		echo 0 >> /tmp/lan_online_list.temp
-		echo $now_arp_refresh_time > /tmp/arp_refresh_time
-	fi
-else
-	echo $now_arp_refresh_time > /tmp/arp_refresh_time
-fi
 
 echo 0

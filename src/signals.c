@@ -3,11 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/signalfd.h>
-#include <syslog.h>
+#include "logging.h"
 #include <time.h>
 #include <unistd.h>
 
 #include "config.h"
+#include "firmware_upgrade.h"
 #include "mcu_proto.h"
 #include "pages.h"
 #include "requests.h"
@@ -20,6 +21,7 @@ int signal_setup() {
     sigemptyset(&mask);
     sigaddset(&mask, SIGALRM); // Timed update
     sigaddset(&mask, SIGTERM); // Router reboot
+    sigaddset(&mask, SIGINT);  // Ctrl+C (also protected during MCU flashing)
     sigaddset(&mask, SIGUSR1); // Factory reset
     sigaddset(&mask, SIGUSR2); // Firmware update
 
@@ -40,11 +42,12 @@ int signal_setup() {
 static time_t g_last_check_time;
 void refresh_screen_timeout() { g_last_check_time = time(NULL); }
 
+extern int g_is_screen_on;
 static void check_screen_timeout() {
     if (CFG->screen_timeout != 0 &&
-        time(NULL) - g_last_check_time >= CFG->screen_timeout) {
-        extern int g_is_screen_on;
+        time(NULL) - g_last_check_time >= CFG->screen_timeout && g_is_screen_on == 1 ) {
         g_is_screen_on = 0; /* Do not process key messages - just wake up if there are any */
+        page_switch_to(PAGE_BASIC_INFO);//page wan have a bug
         request_notify_event(EVENT_SLEEP);
     }
 }
@@ -58,6 +61,14 @@ void signal_notify() {
         return;
     }
 
+    if (g_in_upgrade_mode) {
+        /* During MCU firmware upgrade, dispatch all signals to the upgrade
+         * state machine. It rejects SIGTERM/SIGINT while erasing or flashing
+         * to avoid bricking the screen MCU. */
+        fwupgrade_notify_signal(siginfo.ssi_signo);
+        return;
+    }
+
     switch (siginfo.ssi_signo) {
     case SIGALRM:
         page_update();
@@ -67,6 +78,9 @@ void signal_notify() {
         break;
     case SIGTERM:
         request_notify_event(EVENT_REBOOT);
+        exit(0);
+        break;
+    case SIGINT:
         exit(0);
         break;
     case SIGUSR1:

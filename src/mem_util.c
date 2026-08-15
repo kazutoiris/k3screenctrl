@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <syslog.h>
+#include "logging.h"
 #include <unistd.h>
 
 #include "common.h"
